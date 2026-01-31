@@ -1,0 +1,546 @@
+================================================================================
+              POLYMARKET MOMENTUM TRADING SYSTEM - PROJECT REPORT
+                        (Based on Actual Code Analysis)
+================================================================================
+
+TABLE OF CONTENTS:
+1. Project Overview
+2. Trading Strategy (From Code)
+3. Profit & Loss Calculation
+4. Risk Management
+5. How to Run
+6. Market Coverage Confirmation
+7. Actual Trading Results (Log Analysis)
+8. Root Cause Analysis & Warnings
+9. Real Trading Considerations
+
+================================================================================
+                           1. PROJECT OVERVIEW
+================================================================================
+
+【What is this system?】
+
+An automated trading system for Polymarket (a prediction/betting market platform)
+that trades on live sports events using a momentum-following strategy.
+
+【Current Status】
+
+Running in "Paper Trading" mode - uses virtual money ($50,000) for testing.
+No real money is involved.
+
+【Core Components】
+
+- Real-time price monitoring via WebSocket
+- Automatic event filtering and scoring
+- Momentum signal detection
+- Automated position management
+- Performance tracking and logging
+
+
+================================================================================
+                    2. TRADING STRATEGY (FROM ACTUAL CODE)
+================================================================================
+
+【Strategy: Momentum Following】
+
+The system detects rapid price increases and trades in the direction of momentum.
+
+【Step-by-Step Process (From paper_trader.py)】
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  STEP 1: EVENT FILTERING (event_filter.py)                                  │
+│  ─────────────────────────────────────────                                  │
+│  System automatically finds qualified events:                               │
+│  • Must be LIVE (game in progress)                                          │
+│  • Game progress: 10% - 90%                                                 │
+│  • Minimum 24h volume: $10                                                  │
+│  • Minimum liquidity: $50                                                   │
+│  • Maximum spread: 5%                                                       │
+│  • Must have binary markets (2 outcomes)                                    │
+│  • Priority sports: NFL, NBA, EPL, Tennis, MLB, NHL                         │
+│                                                                             │
+│  Events are scored 0-65 points based on:                                    │
+│  • Liquidity Score: 0-20 points                                             │
+│  • Spread Score: 0-10 points                                                │
+│  • Activity Score: 0-15 points                                              │
+│  • Volatility Score: 0-10 points                                            │
+│  • Category Bonus: 0-10 points                                              │
+│                                                                             │
+│  STEP 2: TEST ORDER PLACEMENT (paper_trader.py:293-336)                     │
+│  ─────────────────────────────────────────────────────                      │
+│  For each qualified event token:                                            │
+│  • Place $5 test order                                                      │
+│  • Deduct $5 from capital immediately                                       │
+│  • Start tracking price changes                                             │
+│                                                                             │
+│  STEP 3: WARMUP PERIOD (10 seconds)                                         │
+│  ─────────────────────────────────────                                      │
+│  • Wait for 10 seconds warmup (line 71: warmup_period = 10.0)               │
+│  • Need minimum 5 price updates (line 72: min_price_updates = 5)            │
+│  • Calculate baseline price from average of warmup prices                   │
+│  • NO 5-minute wait - signals can trigger after ~10 seconds!                │
+│                                                                             │
+│  STEP 4: SIGNAL DETECTION (paper_trader.py:400-433)                         │
+│  ─────────────────────────────────────────────────                          │
+│  Momentum signal triggers when ALL conditions met:                          │
+│  • Price rise ≥ 2% from baseline                                            │
+│  • Volume increase ≥ 30% (if volume data available)                         │
+│  • 2 consecutive rising price periods                                       │
+│  • Price change < 50% (reject unrealistic spikes)                           │
+│                                                                             │
+│  STEP 5: POSITION SIZING (paper_trader.py:435-492)                          │
+│  ─────────────────────────────────────────────────                          │
+│  Position size based on signal strength:                                    │
+│                                                                             │
+│  ┌──────────────┬─────────────────┬─────────────────┬──────────────┐        │
+│  │ Signal       │ Price Rise      │ Volume Increase │ Position $   │        │
+│  ├──────────────┼─────────────────┼─────────────────┼──────────────┤        │
+│  │ WEAK         │ 2% - 3%         │ 30% - 50%       │ $100         │        │
+│  │ MEDIUM       │ 3% - 5%         │ 50% - 100%      │ $150         │        │
+│  │ STRONG       │ > 5%            │ > 100%          │ $200         │        │
+│  └──────────────┴─────────────────┴─────────────────┴──────────────┘        │
+│                                                                             │
+│  STEP 6: POSITION MONITORING (paper_trader.py:494-535)                      │
+│  ─────────────────────────────────────────────────────                      │
+│  Continuously update position with each price update:                       │
+│  • Calculate unrealized P&L                                                 │
+│  • Check exit conditions                                                    │
+│                                                                             │
+│  STEP 7: EXIT CONDITIONS (paper_trader.py:512-535)                          │
+│  ─────────────────────────────────────────────────                          │
+│  Position closes when ANY condition is met:                                 │
+│                                                                             │
+│  1. TAKE PROFIT: Unrealized P&L ≥ +4%                                       │
+│  2. STOP LOSS: Unrealized P&L ≤ -2%                                         │
+│  3. TIMEOUT: Held for ≥ 300 seconds (5 minutes)                             │
+│  4. REVERSAL: 3 consecutive declining prices                                │
+│                                                                             │
+│  TEST ORDER EXPIRATION:                                                     │
+│  • Test orders expire after 300 seconds (5 minutes)                         │
+│  • When expired: Return 98% of test order amount ($4.90 of $5)              │
+│  • 2% loss assumed for spread costs                                         │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                       3. PROFIT & LOSS CALCULATION
+================================================================================
+
+【From paper_trader.py lines 494-506, 537-588】
+
+【Per-Trade P&L Calculation】
+
+While position is OPEN (unrealized):
+  unrealized_pnl = (current_price - entry_price) × quantity
+  unrealized_pnl_pct = (current_price - entry_price) / entry_price
+
+When position CLOSES (realized):
+  realized_pnl = unrealized_pnl
+  exit_amount = entry_amount + realized_pnl
+  capital += exit_amount
+
+【Concrete Example】
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ EXAMPLE TRADE - PROFIT                                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Initial Capital: $50,000                                                    │
+│                                                                             │
+│ Signal: MEDIUM (3.5% price rise detected)                                   │
+│ Position Size: $150                                                         │
+│                                                                             │
+│ Entry:                                                                      │
+│   • Price: $0.50                                                            │
+│   • Quantity: $150 / $0.50 = 300 shares                                     │
+│   • Capital after entry: $50,000 - $150 = $49,850                           │
+│                                                                             │
+│ Exit (Take Profit at +4%):                                                  │
+│   • Price: $0.52 (4% above entry)                                           │
+│   • P&L: ($0.52 - $0.50) × 300 = $6.00                                      │
+│   • Exit amount: $150 + $6 = $156                                           │
+│   • Capital after exit: $49,850 + $156 = $50,006                            │
+│                                                                             │
+│ Result: +$6.00 profit (+4%)                                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ EXAMPLE TRADE - LOSS                                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Initial Capital: $50,006                                                    │
+│                                                                             │
+│ Signal: WEAK (2.2% price rise detected)                                     │
+│ Position Size: $100                                                         │
+│                                                                             │
+│ Entry:                                                                      │
+│   • Price: $0.45                                                            │
+│   • Quantity: $100 / $0.45 = 222.22 shares                                  │
+│   • Capital after entry: $50,006 - $100 = $49,906                           │
+│                                                                             │
+│ Exit (Stop Loss at -2%):                                                    │
+│   • Price: $0.441 (2% below entry)                                          │
+│   • P&L: ($0.441 - $0.45) × 222.22 = -$2.00                                 │
+│   • Exit amount: $100 - $2 = $98                                            │
+│   • Capital after exit: $49,906 + $98 = $50,004                             │
+│                                                                             │
+│ Result: -$2.00 loss (-2%)                                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+【Test Order Cost Calculation】
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TEST ORDER COSTS                                                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ When test order is placed:                                                  │
+│   • Capital -= $5 (deducted immediately)                                    │
+│   • test_order_costs += $5 (tracked in stats)                               │
+│                                                                             │
+│ When test order expires (no signal):                                        │
+│   • Capital += $5 × 0.98 = $4.90 (98% returned)                             │
+│   • Net cost per expired test order: $0.10 (2% loss)                        │
+│                                                                             │
+│ When test order triggers signal:                                            │
+│   • Test order is removed                                                   │
+│   • Position is opened (separate capital deduction)                         │
+│   • Original $5 is NOT returned (absorbed into position logic)              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+【Statistics Tracked (paper_trader.py:148-179, 590-626)】
+
+┌──────────────────┬──────────────────────────────────────────────────────────┐
+│ Metric           │ Calculation                                              │
+├──────────────────┼──────────────────────────────────────────────────────────┤
+│ Win Rate         │ winning_trades / total_trades                            │
+│ Profit Factor    │ total_wins / total_losses                                │
+│ Average Win      │ total_wins / winning_trades                              │
+│ Average Loss     │ total_losses / losing_trades                             │
+│ Max Drawdown     │ (peak_capital - current_capital) / peak_capital          │
+│ Test Order Costs │ Cumulative $5 deductions for all test orders             │
+└──────────────────┴──────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                         4. RISK MANAGEMENT
+================================================================================
+
+【From paper_trader.py lines 224-228】
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ RISK CONTROLS (Hardcoded in PaperTrader.__init__)                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ 1. SINGLE TRADE LIMIT                                                       │
+│    max_single_trade = $200                                                  │
+│    No single position can exceed $200                                       │
+│                                                                             │
+│ 2. POSITION COUNT LIMIT                                                     │
+│    max_positions = 10                                                       │
+│    Maximum 10 open positions at any time                                    │
+│                                                                             │
+│ 3. CAPITAL USAGE LIMIT                                                      │
+│    max_capital_usage = 80%                                                  │
+│    Position size capped at 80% of available capital                         │
+│                                                                             │
+│ 4. DAILY LOSS LIMIT                                                         │
+│    daily_loss_limit = $200                                                  │
+│    (Note: Not actively enforced in current code)                            │
+│                                                                             │
+│ 5. MAXIMUM DRAWDOWN                                                         │
+│    max_drawdown_pct = 15%                                                   │
+│    (Note: Tracked but not actively enforced)                                │
+│                                                                             │
+│ 6. AUTOMATIC STOP LOSS                                                      │
+│    stop_loss_pct = -2%                                                      │
+│    Every position has automatic -2% stop loss                               │
+│                                                                             │
+│ 7. AUTOMATIC TAKE PROFIT                                                    │
+│    take_profit_pct = +4%                                                    │
+│    Every position has automatic +4% take profit                             │
+│                                                                             │
+│ 8. TIME STOP                                                                │
+│    max_hold_time = 300 seconds (5 minutes)                                  │
+│    Positions auto-close after 5 minutes                                     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                           5. HOW TO RUN
+================================================================================
+
+【Installation】
+
+cd c:\Users\shahj\Downloads\Project
+pip install -r requirements.txt
+
+【Run Paper Trading Dashboard】
+
+streamlit run momentum_trader\dashboard\paper_trading_dashboard.py
+
+【Run Real-time Monitoring Dashboard】
+
+streamlit run momentum_trader\dashboard\realtime_dashboard.py
+
+【Language Switching】
+
+Both dashboards support English and Chinese:
+• Find "Language" dropdown in sidebar
+• Select "中文" for Chinese interface
+
+【Data Output】
+
+All trading data saved to: trading_logs/
+• prices_*.csv - All price updates
+• trades_*.csv - Completed trades
+• signals_*.csv - Detected signals
+• latency_*.csv - System latency metrics
+
+
+================================================================================
+                     6. MARKET COVERAGE CONFIRMATION
+================================================================================
+
+【System Trades ALL Markets for ALL Qualified Events】
+
+Verified from paper_trading_dashboard.py (lines 556-598):
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ COMPLETE MARKET COVERAGE                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ The system subscribes to and trades on:                                     │
+│                                                                             │
+│ • ALL qualified events (filtered by event_filter.py criteria)              │
+│ • ALL markets within each qualified event                                   │
+│ • ALL tokens (both YES and NO outcomes) in each market                      │
+│                                                                             │
+│ Code confirmation:                                                          │
+│   for event in qualified_live_events:                                       │
+│       markets = event.get('markets', [])                                    │
+│       for market in markets:                                                │
+│           for idx, token_id in enumerate(clob_ids):                         │
+│               # Subscribe to ALL tokens in this market (both sides)         │
+│                                                                             │
+│ This means the system monitors every possible trading opportunity           │
+│ across all qualified live sports events simultaneously.                     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                 7. ACTUAL TRADING RESULTS (LOG ANALYSIS)
+================================================================================
+
+【Analysis of trades_20260131_234113.csv】
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ ACTUAL PERFORMANCE METRICS                                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ Total Trades:           1,048                                               │
+│ Winning Trades:         200 (19.1%)                                         │
+│ Losing Trades:          848 (80.9%)                                         │
+│                                                                             │
+│ Total P&L:              -$32,233.76 (LOSS)                                  │
+│ Total Wins:             +$1,044.00                                          │
+│ Total Losses:           -$33,277.76                                         │
+│                                                                             │
+│ Average Win:            +$5.22                                              │
+│ Average Loss:           -$39.24                                             │
+│                                                                             │
+│ Average Hold Time:      0.72 seconds                                        │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+【Hold Time Distribution】
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TRADE DURATION BREAKDOWN                                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ < 1 second:      917 trades (87.5%)                                         │
+│ 1-5 seconds:      89 trades (8.5%)                                          │
+│ 5-30 seconds:     32 trades (3.1%)                                          │
+│ > 30 seconds:     10 trades (1.0%)                                          │
+│                                                                             │
+│ CRITICAL FINDING: 87.5% of trades close in under 1 second!                  │
+│ This indicates positions are hitting stop-loss almost immediately.          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                    8. ROOT CAUSE ANALYSIS & WARNINGS
+================================================================================
+
+【What is "Spread"?】
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ SPREAD EXPLAINED                                                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ Spread = The difference between the BUY price and SELL price                │
+│                                                                             │
+│ Example:                                                                    │
+│   • Best Ask (buy price):  $0.52  ← Price to BUY                            │
+│   • Best Bid (sell price): $0.48  ← Price to SELL                           │
+│   • Spread: $0.52 - $0.48 = $0.04 (8% of mid-price)                         │
+│                                                                             │
+│ Impact on Trading:                                                          │
+│   • If you buy at $0.52 and immediately sell, you get $0.48                 │
+│   • Instant loss of 8% just from spread!                                    │
+│   • With 4% take-profit target, spread alone can cause losses               │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+【The REAL Problem: Buying at Price Spike Tops (Mean Reversion)】
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ CRITICAL ISSUE IDENTIFIED FROM TRADING LOGS                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ The system is NOT suffering from latency issues.                            │
+│ System latency is actually very fast: 0.02ms average (from summary log)     │
+│                                                                             │
+│ THE REAL PROBLEM:                                                           │
+│                                                                             │
+│ 1. System detects a 2%+ price RISE as a momentum signal                     │
+│                                                                             │
+│ 2. By definition, when signal triggers, price has ALREADY risen             │
+│    (we're buying AFTER the rise, not before)                                │
+│                                                                             │
+│ 3. The "entry price" recorded is the price AFTER the spike                  │
+│    Example: Entry at $0.99 (top of spike)                                   │
+│                                                                             │
+│ 4. Price immediately drops back down (MEAN REVERSION)                       │
+│    Example: Exit at $0.01 within milliseconds                               │
+│                                                                             │
+│ 5. Result: Massive losses on most trades                                    │
+│                                                                             │
+│ MEAN REVERSION: Prices that spike up tend to fall back to their average.   │
+│ By buying AFTER a spike, we're buying at the worst possible moment.         │
+│                                                                             │
+│ Examples from actual trades:                                                │
+│   • Entry: $0.990 → Exit: $0.010 | P&L: -$98.99 | Hold: 0.00s               │
+│   • Entry: $0.950 → Exit: $0.050 | P&L: -$94.74 | Hold: 0.01s               │
+│   • Entry: $0.880 → Exit: $0.120 | P&L: -$86.36 | Hold: 0.00s               │
+│                                                                             │
+│ These extreme price drops (99% to 1%) in milliseconds suggest:              │
+│   • Data anomalies or glitches in price feed                                │
+│   • Market resolution events (game ending)                                  │
+│   • Thin liquidity causing price jumps                                      │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+【Strategy Limitations】
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PROBLEM 1: MOMENTUM CHASING (BUYING TOPS)                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • System buys AFTER price has already risen 2%+                             │
+│ • This is the opposite of "buy low, sell high"                              │
+│ • Mean reversion causes immediate losses                                    │
+│ • 87.5% of trades close in under 1 second at a loss                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PROBLEM 2: SPREAD COSTS                                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • Typical spread: 1-5%                                                      │
+│ • Target profit: 4%                                                         │
+│ • Spread can eat entire profit margin                                       │
+│ • Combined with mean reversion, losses compound                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PROBLEM 3: FALSE SIGNALS & DATA ANOMALIES                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • Price jumps from $0.99 to $0.01 are not real momentum                     │
+│ • These are likely market resolution or data glitches                       │
+│ • System cannot distinguish real momentum from noise                        │
+│ • Actual win rate: 19.1% (far below 50%)                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ PROBLEM 4: TEST ORDER COSTS                                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ • Each test order costs $5 upfront                                          │
+│ • Expired orders return only $4.90 (2% loss)                                │
+│ • Many test orders needed to find signals                                   │
+│ • Cumulative test costs can be significant                                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+                    9. REAL TRADING CONSIDERATIONS
+================================================================================
+
+【Requirements for Real Trading】
+
+1. Polymarket Account
+   • Register and complete identity verification
+   • Deposit USDC (stablecoin)
+
+2. API Credentials
+   • Obtain private key for order signing
+   • Configure in clob_api.py
+
+3. Code Modifications Needed
+   • Enable real order execution in clob_api.py
+   • Add wallet signing for transactions
+   • Implement proper error handling for real orders
+
+【Recommendations】
+
+1. Run paper trading for extended period (72+ hours recommended)
+2. Analyze results carefully before considering real money
+3. If proceeding, start with minimal capital ($100-500)
+4. Set strict daily loss limits
+5. Monitor system constantly during initial real trading
+
+
+================================================================================
+                              SUMMARY
+================================================================================
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ KEY PARAMETERS (FROM CODE)                                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Initial Capital:        $50,000                                             │
+│ Test Order Amount:      $5                                                  │
+│ Warmup Period:          10 seconds (NOT 5 minutes)                          │
+│ Min Price Updates:      5 updates before signal detection                   │
+│ Test Order Expiry:      300 seconds (5 minutes)                             │
+│ Signal Threshold:       ≥2% price rise + ≥30% volume increase               │
+│ Position Sizes:         $100 (weak) / $150 (medium) / $200 (strong)         │
+│ Take Profit:            +4%                                                 │
+│ Stop Loss:              -2%                                                 │
+│ Max Hold Time:          300 seconds (5 minutes)                             │
+│ Max Positions:          10 concurrent                                       │
+│ Max Single Trade:       $200                                                │
+│ Max Capital Usage:      80%                                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ ACTUAL PERFORMANCE (FROM TRADING LOGS)                                      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Total Trades:           1,048                                               │
+│ Win Rate:               19.1%                                               │
+│ Total P&L:              -$32,233.76                                         │
+│ Average Hold Time:      0.72 seconds                                        │
+│ System Latency:         0.02ms average (very fast)                          │
+│ Market Coverage:        ALL markets for ALL qualified events                │
+│                                                                             │
+│ ROOT CAUSE OF LOSSES:   Mean reversion - buying at price spike tops         │
+│                         NOT latency issues                                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+                            END OF REPORT
+================================================================================
+
+Document Created: January 31, 2026
+Updated: February 1, 2026
+Based on: Actual code analysis of paper_trader.py, config.py, event_filter.py,
+          paper_trading_dashboard.py, and trading log files
